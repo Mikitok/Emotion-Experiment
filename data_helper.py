@@ -114,7 +114,7 @@ def random_embedding(texts, wordsize):
 
 def word2vec_embedding(texts, modelpath, wordsize):
     if not os.path.exists(modelpath):
-        word2vecmodel = word2vec.Word2Vec(texts, size=wordsize, min_count=1)
+        word2vecmodel = word2vec.Word2Vec(texts, size=wordsize, min_count=2)
         word2vecmodel.save(modelpath)
     word2vecmodel = word2vec.Word2Vec.load(modelpath)
 
@@ -148,6 +148,8 @@ def padding_text(texts, mask, padding_word=0, maxlength=None):
             padded_text = text
         padded_texts.append(padded_text)
     return padded_texts
+
+
 
 def doc2vec(texts, wordindex):
     textvec=[]

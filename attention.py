@@ -2,7 +2,7 @@
 # -*- coding:utf-8 -*-
 import tensorflow as tf
 
-def attention(inputs, attention_size, time_major=False, return_alphas=False):
+def attention(name_scope_name, inputs, attention_size, time_major=False, return_alphas=False):
     """
     Attention mechanism layer which reduces RNN/Bi-RNN outputs with Attention vector.
     The idea was proposed in the article by Z. Yang et al., "Hierarchical Attention Networks
@@ -56,10 +56,11 @@ def attention(inputs, attention_size, time_major=False, return_alphas=False):
 
     hidden_size = inputs.shape[2].value  # D value - hidden size of the RNN layer
 
-    # Trainable parameters
-    w_omega = tf.Variable(tf.random_normal([hidden_size, attention_size], stddev=0.1))
-    b_omega = tf.Variable(tf.random_normal([attention_size], stddev=0.1))
-    u_omega = tf.Variable(tf.random_normal([attention_size], stddev=0.1))
+    with tf.name_scope(name_scope_name):
+        # Trainable parameters
+        w_omega = tf.Variable(tf.random_normal([hidden_size, attention_size], stddev=0.1), name='w_omega')
+        b_omega = tf.Variable(tf.random_normal([attention_size], stddev=0.1), name='b_omega')
+        u_omega = tf.Variable(tf.random_normal([attention_size], stddev=0.1), name='u_omega')
 
     with tf.name_scope('v'):
         # Applying fully connected layer with non-linear activation to each of the B*T timestamps;
