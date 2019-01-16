@@ -19,7 +19,7 @@ from sst_config import Config
 dataset_name = 'sentencetext'
 vector_path = './data/' + dataset_name + '_vectors'
 file_path = './data/' + dataset_name + '.pkl'
-iteration_num = 3
+iteration_num = 1
 window_size = 1
 model_name = 'slstm'
 
@@ -357,8 +357,8 @@ class Classifer(object):
         self.text_mask = tf.placeholder(tf.int32, [None, ], name="sentence_mask")
         self.dropout = self.keep_prob = keep_prob = tf.placeholder(tf.float32, name="keep_prob")
         self.config = config
-
         self.embedding = embedding = tf.Variable(tf.random_normal([config.vocab_size, config.hidden_size], mean=0.0, stddev=0.1, dtype=tf.float32),dtype=tf.float32, name="embedding", trainable=config.embedding_trainable)
+        self.shape = tf.shape(self.input_data)
 
         # create word to sentence layers
         sentence_initial_hidden_states = tf.nn.embedding_lookup(embedding, self.input_data)  # 初始化每个细胞的输出状态
@@ -368,13 +368,14 @@ class Classifer(object):
 
         sentence_hidden_states, sentence_cell_states, sentence_dummynode_hidden_states = self.slstm_cell("sentence_slstm", config.hidden_size, self.sentence_mask, sentence_initial_hidden_states, sentence_initial_cell_states, config.layer)
         sentence_representation = sentence_hidden_states + tf.expand_dims(sentence_dummynode_hidden_states, axis=1)
+
         sentence_representation, sentence_alphas = attention('sentence_attenttion', sentence_representation, config.attention_size, return_alphas=True)
-        sentence_representation = tf.expand_dims(sentence_representation, axis=0)
-        self.sentence_alphas = sentence_alphas
+        sentence_representation=tf.reshape(sentence_representation,[config.batch_size, self.shape[0]/config.batch_size, config.hidden_size])
         self.sentence_representation = sentence_representation
+        self.sentence_alphas = sentence_alphas
 
         # create sentence to document layers
-        text_initial_hidden_states=text_initial_cell_states=sentence_representation
+        text_initial_hidden_states = text_initial_cell_states=sentence_representation
         text_initial_hidden_states = tf.nn.dropout(text_initial_hidden_states, keep_prob)  # 丢失神经元，keep_prob:每个保留的概率
         text_initial_cell_states = tf.nn.dropout(text_initial_cell_states, keep_prob)
 
@@ -442,23 +443,26 @@ def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
 
     to_print_total = np.zeros([2, 6])
     for i, inds in enumerate(minibatches):
-        sentece_mask=np.array([])
+        x = [data[0][i] for i in inds]
+        y = np.array([data[1][i] for i in inds])
+
+        # 计算文本实际长度
+        text_mask=[len(s) for s in x]
+        # 对文本做padding
+        text_padding=data_helper.padding_text(x, text_mask, padding_word=[0])
+
         x=[]
-        for i in inds:
-            x = x + data[0][i][0]
-            sentece_mask=np.concatenate((sentece_mask, data[0][i][1]),axis=0)
+        for j in range(len(inds)):
+           x=x+text_padding[j]
+        config.sentence_size = len(x) / config.batch_size
+        # 计算每个句子长度
+        sentence_mask=[len(s) for s in x]
+        # 对句子做padding
+        sentence_padding=data_helper.padding_text(x, sentence_mask, padding_word=0)
 
-        if len(x)==1:
-            continue
-        t = x[0]
-        for j in range(1,len(x)):
-            t=np.vstack((t,x[j]))
-        x=t
+        x = np.array([np.array(s) for s in sentence_padding])
 
-        y = data[1][inds]
-        text_mask = data[2][inds]
-
-        count, cost, to_print, prediction, logits =session.run([model.accuracy, model.cost, model.to_print, model.prediction, model.logits],{model.input_data: x, model.labels: y, model.sentence_mask:sentece_mask, model.text_mask:text_mask , model.keep_prob: keep_prob})
+        count, cost, to_print, prediction, sentence_representation=session.run([model.accuracy, model.cost, model.to_print, model.prediction, model.sentence_representation],{model.input_data: x, model.labels: y, model.sentence_mask:sentence_mask, model.text_mask:text_mask , model.keep_prob: keep_prob})
         # to_print = session.run([model.to_print], {model.input_data: x, model.labels: y, model.sentence_mask:sentece_mask.astype(int), model.text_mask:text_mask.astype(int), model.keep_prob: keep_prob})
         # i=1
         if not is_training:
@@ -469,6 +473,7 @@ def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
         total += len(inds)
         total_cost += cost
         prog.update(i + 1, [("train loss", cost)])
+        # print(correct / total)
 
     print("Total loss:")
     print(total_cost)
@@ -570,26 +575,6 @@ if __name__ == "__main__":
         train_dataset, test_dataset = data_helper.load_data(path=path, n_words=config.vocab_size)
 
         print("number label: " + str(config.num_label))
-
-        # 对训练集计算句子实际长度 并做 padding
-        train_dataset = data_helper.prepare_data(train_dataset[0], train_dataset[1])    # 每篇文章的句子数目
-        # train_dataset[0] = data_helper.padding_text(train_dataset[0], train_dataset[2], padding_word=[0], maxlength=config.sentence_size)   #文章级的padding
-        train_dataset[0] = [data_helper.prepare_data(train_dataset[0][i]) for i in range(len(train_dataset[0]))]    #每个句子的单词数目
-
-        # length = [np.max(train_dataset[0][i][1]) for i in range(len(train_dataset[0]))]
-        for i in range(len(train_dataset[0])):
-            train_dataset[0][i][0]= data_helper.padding_text(train_dataset[0][i][0],train_dataset[0][i][1], padding_word=0)
-            train_dataset[0][i][0]=[np.array(train_dataset[0][i][0][j]) for j in range(len(train_dataset[0][i][0]))]
-
-        # 对测试集计算句子实际长度 并做 padding
-        test_dataset = data_helper.prepare_data(test_dataset[0], test_dataset[1])  # 每篇文章的句子数目
-        # test_dataset[0] = data_helper.padding_text(test_dataset[0], test_dataset[2], padding_word=[0],maxlength=50)  # 文章级的padding
-        test_dataset[0] = [data_helper.prepare_data(test_dataset[0][i]) for i in range(len(test_dataset[0]))]  # 每个句子的单词数目
-
-        # length=[np.max(test_dataset[0][i][1]) for i in range(len(test_dataset[0]))]
-        for i in range(len(test_dataset[0])):
-            test_dataset[0][i][0] = data_helper.padding_text(test_dataset[0][i][0], test_dataset[0][i][1], padding_word=0)
-            test_dataset[0][i][0] = [np.array(test_dataset[0][i][0][j]) for j in range(len(test_dataset[0][i][0]))]
 
         with tf.Graph().as_default(), tf.Session() as session:
             initializer = tf.random_normal_initializer(0,0.05)  # 用正态分布产生张量的初始化器。(mean, stddev, seed=None, dtype=tf.float32)

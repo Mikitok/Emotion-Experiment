@@ -6,11 +6,12 @@ class Config(object):
     attention_size=300
     lr_decay = 0.95
     valid_portion=0.0
-    batch_size=1    #一次的文章数目，如果需要设置为>1，则需要修改padding和slstm_cell中间的attention_filter（两层）
+    batch_size=5    #一次的文章数目
     sentence_size=50
+    word_size=30
     keep_prob = 0.5
     #0.05
-    learning_rate = 0.001
+    learning_rate = 0.01
     max_epoch =2
     max_max_epoch =4
     num_label=6
