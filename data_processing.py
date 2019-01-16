@@ -7,13 +7,15 @@ import jieba
 import pickle
 import codecs
 import itertools
+import numpy
 import pandas as pd
 import numpy as np
-import math
 from gensim import corpora
 from collections import Counter
 from gensim.models import word2vec
 from zhon.hanzi import punctuation
+import six.moves.cPickle as pickle
+from __future__ import print_function
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 def load_sina(textfilename,labelfilename):
@@ -24,6 +26,20 @@ def load_sina(textfilename,labelfilename):
     labels = pickle.load(f)
     f.close()
     return texts, labels
+
+def load_semeval(filename):
+    labels = []
+    texts = []
+    with open(filename, 'r') as f:
+        sentences = f.readlines()
+        for line in sentences:
+            line = line.split('\t')
+            emt = np.array(re.split('[\s:]', line[1]))
+            emt = emt[[3, 5, 7, 9, 11, 13]]  # 取出每行的emotion对应的label，分别是anger disgust fear joy sad surprise，需要rank的时候加上all 1，再归一化
+            labels.append(emt)
+            text = re.sub(r"\n", "", line[2])
+            texts.append(text.split())
+    return labels, texts
 
 def clean_text(text):
     # 清除空格
@@ -95,7 +111,7 @@ def tfidf_words(texts,stopwords,topN):
 
     return tfidf, articles
 
-def outside_embedding(embeddingpath):
+def out_embedding(embeddingpath):
     f=codecs.open(embeddingpath, "rb")
     wordvectordict = pickle.load(f)
     worddict = corpora.dictionary.Dictionary()
@@ -116,6 +132,7 @@ def word2vec_embedding(texts, modelpath, wordsize):
     if not os.path.exists(modelpath):
         word2vecmodel = word2vec.Word2Vec(texts, size=wordsize, min_count=1)
         word2vecmodel.save(modelpath)
+    # word2vecmodel = word2vec.Word2Vec(texts, size=wordsize, min_count=1)
     word2vecmodel = word2vec.Word2Vec.load(modelpath)
 
     worddict = corpora.dictionary.Dictionary()
@@ -127,27 +144,26 @@ def word2vec_embedding(texts, modelpath, wordsize):
         wordvectordict['']=np.zeros(wordsize)
     return wordindex, wordvectordict
 
+def pad_sentences(sentences, padding_word="", maxlength=None):
+	# 将所有句子变为统一长度forced_sequence_length，如果forced_sequence_length==None，则转为最长句子长度，padding_word：填充词
+	if maxlength is None: # Train
+		sequence_length = max(len(x) for x in sentences)
+	else: # Prediction
+		#logging.critical('This is prediction, reading the trained sequence length')
+		sequence_length = maxlength
+	#logging.critical('The maximum length is {}'.format(sequence_length))
 
-def padding_text(texts, mask, padding_word=0, maxlength=None):
-    # 将所有句子变为统一长度maxlength，如果maxlength==None，则转为最长句子长度，padding_word：填充词
-    if maxlength is None: # Train
-        sequence_length = np.max(mask)
-    else: # Prediction
-        sequence_length = math.ceil(maxlength)
+	padded_sentences = []
+	for i in range(len(sentences)):
+		sentence = sentences[i]
+		num_padding = sequence_length - len(sentence)
 
-    padded_texts = []
-    for i in range(len(texts)):
-        text = texts[i]
-        num_padding = sequence_length - len(text)
-
-        if num_padding < 0: # Prediction: 太长删掉
-            padded_text = text[0:sequence_length]
-        else:
-            for i in range(num_padding):
-                text.append(padding_word)
-            padded_text = text
-        padded_texts.append(padded_text)
-    return padded_texts
+		if num_padding < 0: # Prediction: 太长删掉
+			padded_sentence = sentence[0:sequence_length]
+		else:	# Train：不够用padding_word补足
+			padded_sentence = sentence + [padding_word] * num_padding
+		padded_sentences.append(padded_sentence)
+	return padded_sentences
 
 def doc2vec(texts, wordindex):
     textvec=[]
@@ -156,8 +172,26 @@ def doc2vec(texts, wordindex):
         for word in sentence:
             if word in wordindex.keys():
                 s.append(wordindex[word])
+            # else:
+            #     s.append(wordindex[''])
         textvec.append(np.array(s))
+    # return np.array(textvec)
     return textvec
+
+def onehot(labels):
+    emotion=[]
+    for label in labels:
+        emt = np.argmax([int(i) for i in label])
+        emotion.append(emt)
+    # num_labels = len(label)
+    # labels = [i for i in range(num_labels)]
+    # one_hot = np.zeros((num_labels, num_labels), int)
+    # np.fill_diagonal(one_hot, 1)
+    # label_dict = dict(zip(labels, one_hot))
+    # y_raw = [label_dict[y] for y in emotion]
+    # y = np.array(y_raw)
+
+    return emotion
 
 def singlelabel(labels):
     emotion=[]
@@ -166,13 +200,37 @@ def singlelabel(labels):
         emotion.append(emt)
     return emotion
 
-def prepare_data(seqs, labels=None):
+def batch_iter(data, batch_size, num_epochs, shuffle=True): #shuffle：打乱
+	data = np.array(data)
+	data_size = len(data)
+	num_batches_per_epoch = int(data_size / batch_size) + 1
+
+	for epoch in range(num_epochs):
+		if shuffle:
+			shuffle_indices = np.random.permutation(np.arange(data_size))# 以data_size为终点，起点取默认值0，步长取默认值1生成随机数并打乱
+			shuffled_data = data[shuffle_indices]	#将所有数据打乱
+		else:
+			shuffled_data = data
+
+		for batch_num in range(num_batches_per_epoch):
+			start_index = batch_num * batch_size
+			end_index = min((batch_num + 1) * batch_size, data_size)
+			yield shuffled_data[start_index:end_index]	#截出一个epoch下的一个batch
+
+def generate_matrix(seqs, maxlen, lengths):
+    n_samples = len(seqs)
+    x= numpy.zeros((n_samples, maxlen)).astype('int64')
+
+    for idx, s in enumerate(seqs):
+        if lengths[idx]>= maxlen:
+            s=s[:maxlen]
+        x[idx, :lengths[idx]] = s
+    return x
+
+def prepare_data(seqs, labels):
     lengths = [len(s) for s in seqs]
-    if labels:
-        labels = np.array(labels).astype('int32')
-        return [seqs, labels, np.array(lengths).astype('int32')]
-    # return [np.array(seqs), np.array(lengths).astype('int32')]
-    return [seqs, np.array(lengths).astype('int32')]
+    labels = numpy.array(labels).astype('int32')
+    return [numpy.array(seqs), labels, numpy.array(lengths).astype('int32')]
 
 def remove_unk(x, n_words):
     return [[1 if w >= n_words else w for w in sen] for sen in x]
@@ -181,12 +239,14 @@ def load_data(path, n_words):
     with open(path, 'rb') as f:
         dataset_x, dataset_label= pickle.load(f)
         train_set_x, train_set_y = dataset_x[0], dataset_label[0]
-        test_set_x, test_set_y = dataset_x[1], dataset_label[1]
+        valid_set_x, valid_set_y =dataset_x[1], dataset_label[1]
+        test_set_x, test_set_y = dataset_x[2], dataset_label[2]
     #remove unknown words
-    train_set_x = [remove_unk(x, n_words) for x in train_set_x]
-    test_set_x = [remove_unk(x, n_words) for x in test_set_x]
+    train_set_x = remove_unk(train_set_x, n_words)
+    valid_set_x = remove_unk(valid_set_x, n_words)
+    test_set_x = remove_unk(test_set_x, n_words)
 
-    return [train_set_x, train_set_y], [test_set_x, test_set_y]
+    return [train_set_x, train_set_y], [valid_set_x, valid_set_y], [test_set_x, test_set_y]
 
 if __name__ == "__main__":
     train_file = './data/sinanews/'
