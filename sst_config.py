@@ -11,7 +11,7 @@ class Config(object):
     word_size=30
     keep_prob = 0.5
     #0.05
-    learning_rate = 0.01
+    learning_rate = 0.001
     max_epoch =2
     max_max_epoch =4
     num_label=6

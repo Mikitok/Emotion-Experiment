@@ -358,7 +358,9 @@ class Classifer(object):
         self.dropout = self.keep_prob = keep_prob = tf.placeholder(tf.float32, name="keep_prob")
         self.config = config
         self.embedding = embedding = tf.Variable(tf.random_normal([config.vocab_size, config.hidden_size], mean=0.0, stddev=0.1, dtype=tf.float32),dtype=tf.float32, name="embedding", trainable=config.embedding_trainable)
-        self.shape = tf.shape(self.input_data)
+        # self.batch_size = tf.shape(self.text_mask)
+        # self.sentence_num=tf.shape(self.sentence_mask)/self.batch_size
+        self.shape=tf.shape(self.input_data)
 
         # create word to sentence layers
         sentence_initial_hidden_states = tf.nn.embedding_lookup(embedding, self.input_data)  # 初始化每个细胞的输出状态
@@ -370,7 +372,8 @@ class Classifer(object):
         sentence_representation = sentence_hidden_states + tf.expand_dims(sentence_dummynode_hidden_states, axis=1)
 
         sentence_representation, sentence_alphas = attention('sentence_attenttion', sentence_representation, config.attention_size, return_alphas=True)
-        sentence_representation=tf.reshape(sentence_representation,[config.batch_size, self.shape[0]/config.batch_size, config.hidden_size])
+        # sentence_representation=tf.reduce_mean(sentence_representation,axis=1)
+        sentence_representation=tf.reshape(sentence_representation,[config.batch_size, self.shape[0]/config.batch_size, tf.cast(config.hidden_size, dtype='int32')])
         self.sentence_representation = sentence_representation
         self.sentence_alphas = sentence_alphas
 
@@ -383,6 +386,7 @@ class Classifer(object):
         text_representation = text_hidden_states + tf.expand_dims(text_dummynode_hidden_states, axis=1)
         text_representation, text_alphas = attention('text_attenttion',text_representation, config.attention_size, return_alphas=True)
         self.text_alphas = text_alphas
+        # text_representation=tf.reduce_mean(sentence_representation,axis=1)
         self.text_representation = text_representation
 
         distribution_w = tf.Variable(tf.random_normal([config.hidden_size, config.num_label], mean=0.0, stddev=0.1, dtype=tf.float32),dtype=tf.float32, name="distribution_w")
@@ -398,7 +402,7 @@ class Classifer(object):
 
         # cross entropy loss
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=logits)
-        self.cost = cost = tf.reduce_mean(loss)
+        self.cost = cost = tf.reduce_mean(loss)+config.l2_beta * tf.nn.l2_loss(embedding)
 
         # designate training variables
         tvars = tf.trainable_variables()
@@ -424,9 +428,9 @@ def get_minibatches_idx(n, batch_size, shuffle=True):
     for i in range(n // batch_size):
         minibatches.append(idx_list[minibatch_start:minibatch_start + batch_size])
         minibatch_start += batch_size
-    if (minibatch_start != n):
-        # Make a minibatch out of what is left
-        minibatches.append(idx_list[minibatch_start:])
+    # if (minibatch_start != n):
+    #     # Make a minibatch out of what is left
+    #     minibatches.append(idx_list[minibatch_start:])
     return minibatches
 
 def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
@@ -443,8 +447,8 @@ def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
 
     to_print_total = np.zeros([2, 6])
     for i, inds in enumerate(minibatches):
-        x = [data[0][i] for i in inds]
-        y = np.array([data[1][i] for i in inds])
+        x = [data[0][j] for j in inds]
+        y = np.array([data[1][j] for j in inds])
 
         # 计算文本实际长度
         text_mask=[len(s) for s in x]
@@ -454,7 +458,7 @@ def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
         x=[]
         for j in range(len(inds)):
            x=x+text_padding[j]
-        config.sentence_size = len(x) / config.batch_size
+        config.sentence_size = len(x) / len(inds)
         # 计算每个句子长度
         sentence_mask=[len(s) for s in x]
         # 对句子做padding
@@ -462,7 +466,7 @@ def run_epoch(session, config, model, data, eval_op, keep_prob, is_training):
 
         x = np.array([np.array(s) for s in sentence_padding])
 
-        count, cost, to_print, prediction, sentence_representation=session.run([model.accuracy, model.cost, model.to_print, model.prediction, model.sentence_representation],{model.input_data: x, model.labels: y, model.sentence_mask:sentence_mask, model.text_mask:text_mask , model.keep_prob: keep_prob})
+        count, _, cost, to_print, prediction, sentence_representation=session.run([model.accuracy, eval_op, model.cost, model.to_print, model.prediction, model.sentence_representation],{model.input_data: x, model.labels: y, model.sentence_mask:sentence_mask, model.text_mask:text_mask , model.keep_prob: keep_prob})
         # to_print = session.run([model.to_print], {model.input_data: x, model.labels: y, model.sentence_mask:sentece_mask.astype(int), model.text_mask:text_mask.astype(int), model.keep_prob: keep_prob})
         # i=1
         if not is_training:
@@ -592,6 +596,7 @@ if __name__ == "__main__":
                     size = shape[0].value
                 total += size
             print(total)
+
             # initialize
             init = tf.global_variables_initializer()
 
